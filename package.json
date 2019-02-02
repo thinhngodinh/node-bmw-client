@@ -14,6 +14,7 @@
 		"json-colorizer": "^2.1.2",
 		"jsonfile": "^5.0.0",
 		"kodi-ws": "^2.4.3",
+		"logitech-g29": "^1.0.11",
 		"moment": "^2.24.0",
 		"multipad": "^1.1.1",
 		"node-unit-conversion": "^0.1.1",
