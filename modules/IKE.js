@@ -9,7 +9,7 @@ const os           = require('os');
 
 // Clear check control messages, then refresh HUD
 function text_urgent_off() {
-	if (config.chassis.model !== 'e39') return;
+	if (config.intf.ibus.enabled !== true) return;
 
 	bus.data.send({
 		src : 'CCM',
@@ -38,6 +38,7 @@ class IKE extends EventEmitter {
 	}
 
 
+	// Broadcast: Aux heat LED status
 	// This actually is a bitmask but.. this is also a freetime project
 	decode_aux_heat_led(data) {
 		data.command = 'bro';
@@ -57,6 +58,23 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Broadcast: BC button press (MFL BC stalk button)
+	decode_bc_button(data) {
+		data.command = 'bro';
+		data.value   = 'BC button';
+
+		// Extend cluster HUD refresh by 5 seconds, so you can read what's on the screen
+		update.status('hud.refresh_last', (status.hud.refresh_last + 5000));
+
+		// 5.2 seconds later, re-refresh it
+		setTimeout(() => {
+			this.hud_refresh();
+		}, 5200);
+
+		return data;
+	}
+
+	// Broadcast: Country coding data
 	decode_country_coding_data(data) {
 		data.command = 'bro';
 		data.value   = 'TODO country coding data';
@@ -64,6 +82,7 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Gong status
 	decode_gong_status(data) {
 		data.command = 'bro';
 		data.value   = 'TODO gong status ' + data.msg;
@@ -71,6 +90,7 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Update: OBC text
 	decode_obc_text(data) {
 		data.command = 'upd';
 
@@ -399,6 +419,7 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Broadcast: Odometer
 	decode_odometer(data) {
 		data.command = 'bro';
 		data.value   = 'odometer';
@@ -413,31 +434,33 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Broadcast: Vehicle speed and RPM
 	decode_speed_values(data) {
 		data.command = 'bro';
 		data.value   = 'speed values';
 
 		// Update vehicle and engine speed variables
 		// Also allow update from IBUS/KBUS even if CANBUS is enabled when the ignition
-		if (config.bus.canbus.speed === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.speed === false || status.vehicle.ignition_level < 3) {
 			update.status('vehicle.speed.kmh', parseFloat(data.msg[1] * 2));
 			update.status('vehicle.speed.mph', parseFloat(convert(parseFloat((data.msg[1] * 2))).from('kilometre').to('us mile').toFixed(2)));
 		}
 
-		if (config.bus.canbus.rpm === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.rpm === false || status.vehicle.ignition_level < 3) {
 			update.status('engine.speed', parseFloat(data.msg[2] * 100));
 		}
 
 		return data;
 	}
 
+	// Broadcast: Coolant temp and external temp
 	// Update exterior and engine coolant temperature data
 	decode_temperature_values(data) {
 		data.command = 'bro';
 		data.value   = 'temperature values';
 
 		// Temperatures are not broadcast over CANBUS when ignition is not in run
-		if (config.bus.canbus.coolant === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.coolant === false || status.vehicle.ignition_level < 3) {
 			let temp_coolant = parseFloat(data.msg[2]);
 
 			// Signed value?
@@ -448,7 +471,7 @@ class IKE extends EventEmitter {
 		}
 
 		// Temperatures are not broadcast over CANBUS when ignition is not in run
-		if (config.bus.canbus.exterior === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.exterior === false || status.vehicle.ignition_level < 3) {
 			let temp_exterior = parseFloat(data.msg[1]);
 
 			// Signed value?
@@ -458,15 +481,13 @@ class IKE extends EventEmitter {
 			update.status('temperature.exterior.f', Math.floor(convert(temp_exterior).from('celsius').to('fahrenheit')));
 		}
 
-		this.hud_refresh();
-
 		return data;
 	}
 
 	// Pretend to be IKE saying the car is on
 	// Note - this can and WILL set the alarm off - kudos to the Germans
 	ignition(state) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Format state name
 		switch (state) {
@@ -526,17 +547,53 @@ class IKE extends EventEmitter {
 		}
 	}
 
+
+	ok2hud() {
+		// Bounce if the ignition is off
+		if (status.vehicle.ignition_level < 1) return false;
+
+		// Bounce if override is active
+		if (this.hud_override === true) return false;
+
+		let time_now = now();
+		let refresh_delta = time_now - status.hud.refresh_last;
+
+		// Bonce if the last update was less than the configured value in milliseconds ago
+		if (refresh_delta <= config.hud.refresh_max) return false;
+
+		update.status('hud.refresh_last', time_now);
+
+		return true;
+	}
+
+	// Refresh custom HUD
+	hud_refresh(override = false) {
+		if (config.intf.ibus.enabled !== true) return;
+
+		// Bounce if not in override mode AND it's not OK (yet) to post a HUD update
+		if (override === false && !this.ok2hud()) return;
+
+		this.hud_render(override, () => {
+			// Send text to IKE
+			this.text(status.hud.string);
+		});
+	}
+
 	// Refresh custom HUD speed
 	hud_refresh_speed() {
+		if (config.intf.ibus.enabled !== true) return;
+
+		// Bounce if it's not OK (yet) to post a HUD update
 		if (!this.ok2hud()) return;
 
 		// Send text to IKE
 		this.text(status.vehicle.speed.mph + 'mph');
 	}
 
+
 	// Render custom HUD string
 	hud_render(override = false, hud_render_cb = null) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Determine Moment.js format string
 		let moment_format;
@@ -551,7 +608,8 @@ class IKE extends EventEmitter {
 			center : '',
 			right  : '',
 
-			cons  : status.obc.consumption.c1.mpg.toFixed(1) + 'mg', // TODO use unit from config
+			// TODO: Use unit from config
+			cons  : status.obc.consumption.c1.mpg.toFixed(1) + 'mg',
 			egt   : Math.floor(status.temperature.exhaust.c) + '¨',
 			iat   : Math.floor(status.temperature.intake.c) + '¨',
 			load  : status.system.temperature + '¨|' + Math.ceil(status.system.cpu.load_pct) + '%',
@@ -567,7 +625,7 @@ class IKE extends EventEmitter {
 
 		// Only use voltage from CANBUS if configured to do so, and ignition is in run
 		// CANBUS data is not broadcast when key is in accessory
-		if (config.bus.canbus.voltage === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.voltage === false || status.vehicle.ignition_level < 3) {
 			hud_strings.volt = parseFloat(status.lcm.voltage.terminal_30.toFixed(1));
 		}
 
@@ -577,7 +635,7 @@ class IKE extends EventEmitter {
 		}
 
 
-		// TODO use layout from config
+		// TODO: Use layout from config
 		hud_strings.left   = hud_strings.temp;
 		hud_strings.center = hud_strings.egt;
 		hud_strings.right  = hud_strings.iat;
@@ -613,25 +671,10 @@ class IKE extends EventEmitter {
 		hud_render_cb = undefined;
 	}
 
-	// Refresh custom HUD
-	hud_refresh(override = false) {
-		if (config.chassis.model !== 'e39') return;
-
-		// Bounce if not in override mode AND it's not OK (yet) to post a HUD update
-		if (override === false && !this.ok2hud()) {
-			this.hud_render(override);
-			return;
-		}
-
-		this.hud_render(override, () => {
-			// Send text to IKE
-			this.text(status.hud.string);
-		});
-	}
 
 	// OBC set clock
 	obc_clock() {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		log.module('Setting OBC clock to current time');
 
@@ -650,7 +693,7 @@ class IKE extends EventEmitter {
 
 	// OBC data request
 	obc_data(action, value, target) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		let cmd = 0x41; // OBC data request
 
@@ -690,7 +733,7 @@ class IKE extends EventEmitter {
 
 	// Check control messages
 	text_urgent(message, timeout = 5000) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		log.module('Sending urgent IKE text message: \'' + message + '\'');
 
@@ -712,7 +755,7 @@ class IKE extends EventEmitter {
 
 	// Check control warnings
 	text_warning(message, timeout = 10000) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		log.module('Sending warning IKE text message: \'' + message + '\'');
 
@@ -744,7 +787,7 @@ class IKE extends EventEmitter {
 
 	// Trim IKE text string and potentially space-pad
 	text_prepare(message, pad = false) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Trim string to max length
 		message = message.substring(0, this.max_len_text);
@@ -766,27 +809,9 @@ class IKE extends EventEmitter {
 		return hex.a2h(message);
 	}
 
-	ok2hud() {
-		// Bounce if the ignition is off
-		if (status.vehicle.ignition_level < 1) return false;
-
-		// Bounce if override is active
-		if (this.hud_override === true) return false;
-
-		let time_now = now();
-		let refresh_delta = time_now - status.hud.refresh_last;
-
-		// Bonce if the last update was less than the configured value in milliseconds ago
-		if (refresh_delta <= config.hud.refresh_max) return false;
-
-		update.status('hud.refresh_last', time_now);
-
-		return true;
-	}
-
 	// IKE cluster text send message - without space padding
 	text_nopad(message, cb = null, override = false) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Bounce if override is active
 		if (override === false && this.hud_override === true) {
@@ -812,9 +837,9 @@ class IKE extends EventEmitter {
 	}
 
 
-	// Refresh various values every 15 seconds
+	// Refresh various values every 12 seconds
 	data_refresh() {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		if (status.vehicle.ignition_level === 0) {
 			if (this.timeout_data_refresh !== null) {
@@ -837,22 +862,23 @@ class IKE extends EventEmitter {
 		this.hud_refresh(true);
 
 		// Only request temperatures if not configured to get both from CANBUS or ignition is not in run
-		if (config.bus.canbus.coolant === false || config.bus.canbus.exterior === false || status.vehicle.ignition_level < 3) {
+		if (config.canbus.coolant === false || config.canbus.exterior === false || status.vehicle.ignition_level < 3) {
 			this.request('temperature');
 		}
 
-		if (status.vehicle.ignition_level !== 0) {
-			if (this.timeout_data_refresh === null) log.module('Set data refresh timeout');
+		if (status.vehicle.ignition_level === 0) return;
 
-			// setTimeout for next update
-			// TODO: Make this setTimeout delay value a config param
-			let self = this;
-			this.timeout_data_refresh = setTimeout(() => {
-				self.data_refresh();
-			}, 12000);
-		}
+		if (this.timeout_data_refresh === null) log.module('Set data refresh timeout');
+
+		// setTimeout for next update
+		// TODO: Make this setTimeout delay value a config param
+		let self = this;
+		this.timeout_data_refresh = setTimeout(() => {
+			self.data_refresh();
+		}, 12000);
 	}
 
+	// Broadcast: Ignition status
 	decode_ignition_status(data) {
 		let new_level_name;
 
@@ -968,6 +994,7 @@ class IKE extends EventEmitter {
 		return data;
 	}
 
+	// Broadcast: IKE sensor status
 	decode_sensor_status(data) {
 		data.command = 'bro';
 		data.value   = 'sensor status';
@@ -1000,17 +1027,20 @@ class IKE extends EventEmitter {
 	}
 
 	init_listeners() {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Bring up last HUD refresh time
 		update.status('hud.refresh_last', now());
 
 		// Refresh data on interface connection
 		socket.on('recv-host-connect', (data) => {
+			// Show warning message in cluster if app running for longer than 30 seconds
+			if (now() > 30000) {
+				this.text_urgent('    ' + data.intf + ' restart    ');
+			}
+
 			// Only refresh on new IBUS interface connection
 			if (data.intf !== 'ibus') return;
-
-			// this.text_warning('    App restart!    ', 2500);
 
 			// Clear existing timeout if exists
 			if (this.timeout_accept_refresh !== null) {
@@ -1021,7 +1051,7 @@ class IKE extends EventEmitter {
 			this.timeout_accept_refresh = setTimeout(() => {
 				switch (config.options.obc_refresh_on_start) {
 					case false : this.request('ignition'); break;
-					default    : this.obc_refresh();
+					case true  : this.obc_refresh();
 				}
 			}, 250);
 		});
@@ -1036,7 +1066,7 @@ class IKE extends EventEmitter {
 
 		// Refresh HUD after certain data values update
 		update.on('status.dme.voltage',             () => { this.hud_refresh(); });
-		// update.on('status.lcm.voltage.terminal_30', () => { this.hud_refresh(); });
+		update.on('status.lcm.voltage.terminal_30', () => { this.hud_refresh(); });
 		// update.on('status.obc.consumption.c1.mpg',  () => { this.hud_refresh(); });
 		// update.on('status.obc.range.mi',            () => { this.hud_refresh(); });
 		update.on('status.system.temperature',      () => { this.hud_refresh(); });
@@ -1047,12 +1077,19 @@ class IKE extends EventEmitter {
 		// update.on('status.vehicle.clutch_count',    () => { this.hud_refresh(); });
 		// update.on('status.vehicle.speed.mph',       () => { this.hud_refresh(); });
 
+		// DSC off CC message
+		update.on('status.vehicle.dsc.active', (value) => {
+			switch (value.new) {
+				case false : this.text_warning('  DSC deactivated!  '); break;
+			}
+		});
+
 		log.msg('Initialized listeners');
 	}
 
 	// Refresh OBC data
 	obc_refresh() {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		this.emit('obc-refresh');
 
@@ -1106,61 +1143,26 @@ class IKE extends EventEmitter {
 
 	// Parse data sent from IKE module
 	parse_out(data) {
-		// Init variables
 		switch (data.msg[0]) {
-			case 0x07: // Gong status
-				data = this.decode_gong_status(data);
-				break;
-
-			case 0x11: // Broadcast: Ignition status
-				data = this.decode_ignition_status(data);
-				break;
-
-			case 0x13: // IKE sensor status
-				data = this.decode_sensor_status(data);
-				break;
-
-			case 0x15: // country coding data
-				data = this.decode_country_coding_data(data);
-				break;
-
-			case 0x17: // Odometer
-				data = this.decode_odometer(data);
-				break;
-
-			case 0x18: // Vehicle speed and RPM
-				data = this.decode_speed_values(data);
-				break;
-
-			case 0x19: // Coolant temp and external temp
-				data = this.decode_temperature_values(data);
-				break;
-
-			case 0x24: // Update: OBC text
-				data = this.decode_obc_text(data);
-				break;
-
-			case 0x2A: // Broadcast: Aux heat LED status
-				data = this.decode_aux_heat_led(data);
-				break;
-
-			case 0x57: // Broadcast: BC button press (MFL BC stalk button)
-				data.command = 'bro';
-				data.value   = 'BC button';
-				break;
-
-			default:
-				data.command = 'unk';
-				data.value   = Buffer.from(data.msg);
-				break;
+			case 0x07 : return this.decode_gong_status(data);
+			case 0x11 : return this.decode_ignition_status(data);
+			case 0x13 : return this.decode_sensor_status(data);
+			case 0x15 : return this.decode_country_coding_data(data);
+			case 0x17 : return this.decode_odometer(data);
+			case 0x18 : return this.decode_speed_values(data);
+			case 0x19 : return this.decode_temperature_values(data);
+			case 0x24 : return this.decode_obc_text(data);
+			case 0x2A : return this.decode_aux_heat_led(data);
+			case 0x57 : return this.decode_bc_button(data);
 		}
 
-		log.bus(data);
+		return data;
 	}
+
 
 	// Request various things from IKE
 	request(value) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		let cmd = null;
 		let src = 'VID';
@@ -1233,7 +1235,7 @@ class IKE extends EventEmitter {
 
 	// IKE cluster text send message
 	text(message, cb = null, override = false) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// Bounce if override is active
 		if (override === false && this.hud_override === true) {
@@ -1266,7 +1268,7 @@ class IKE extends EventEmitter {
 
 	// IKE cluster text send message, override other messages
 	text_override(message, timeout = 2500, direction = 'left', turn = false) {
-		if (config.chassis.model !== 'e39') return;
+		if (config.intf.ibus.enabled !== true) return;
 
 		// kodi.notify(module_name, message);
 		let scroll_delay         = 300;
